@@ -1,9 +1,10 @@
-import React from 'react';
-import { Text, TouchableOpacity, View } from 'react-native';
+import React, { useRef } from 'react';
+import { Text, TouchableOpacity, View, Alert } from 'react-native';
 import { useAnimatedReaction, useSharedValue } from 'react-native-reanimated';
 import { Camera, CameraDevice, useFrameProcessor } from 'react-native-vision-camera';
+import { File, Paths } from 'expo-file-system';
 
-import { cameraStyles } from '../styles';
+import { cameraStyles } from '../../styles';
 
 interface CameraComponentProps {
   device: CameraDevice;
@@ -16,9 +17,18 @@ interface CameraComponentProps {
     hasVitiligo: boolean;
     confidence: number;
   }) => void;
+  onFrameSaved?: (imageUri: string) => void;
 }
 
-export default function CameraComponent({ device, isActive, onToggleCamera, onFrameProcessed }: CameraComponentProps) {
+export default function CameraComponent({
+  device,
+  isActive,
+  onToggleCamera,
+  onFrameProcessed,
+  onFrameSaved,
+}: CameraComponentProps) {
+  const cameraRef = useRef<Camera>(null);
+
   // Shared values to communicate between worklet and JS thread
   const frameData = useSharedValue({
     width: 0,
@@ -75,12 +85,74 @@ export default function CameraComponent({ device, isActive, onToggleCamera, onFr
     [frameData],
   );
 
+  const saveFrame = async () => {
+    try {
+      if (!cameraRef.current) {
+        Alert.alert('Error', 'Camera not ready');
+        return;
+      }
+
+      // Take a photo
+      const photo = await cameraRef.current.takePhoto({
+        flash: 'off',
+      });
+
+      // Create permanent file in document directory
+      const permanentFile = new File(Paths.document, 'vitiligo-saved-frame.jpg');
+
+      console.log('Saving to permanent storage:', permanentFile.uri);
+
+      // Delete old file if it exists
+      try {
+        if (permanentFile.exists) {
+          await permanentFile.delete();
+        }
+      } catch {
+        // Ignore if file doesn't exist or can't be deleted
+      }
+
+      // Read the temporary file content and write to permanent location
+      // Ensure the temporary file path has proper file:// prefix
+      const tempFilePath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
+      console.log('Original photo path:', photo.path);
+      console.log('Fixed temp file path:', tempFilePath);
+
+      const tempFile = new File(tempFilePath);
+      const fileContent = await tempFile.bytes();
+      await permanentFile.write(fileContent);
+
+      // Clean up temporary file
+      try {
+        await tempFile.delete();
+      } catch {
+        // Ignore cleanup errors
+      }
+
+      // Use permanent file URI
+      onFrameSaved?.(permanentFile.uri);
+      console.log('Frame saved permanently:', permanentFile.uri);
+    } catch (error) {
+      console.error('Error saving frame:', error);
+      Alert.alert('Error', 'Failed to save frame');
+    }
+  };
+
   return (
     <View style={cameraStyles.cameraContainer}>
-      <Camera style={cameraStyles.camera} device={device} isActive={isActive} frameProcessor={frameProcessor} />
+      <Camera
+        ref={cameraRef}
+        style={cameraStyles.camera}
+        device={device}
+        isActive={isActive}
+        frameProcessor={frameProcessor}
+        photo={true}
+      />
       <View style={cameraStyles.overlay}>
         <TouchableOpacity style={cameraStyles.stopButton} onPress={onToggleCamera}>
           <Text style={cameraStyles.buttonText}>Stop Camera</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={cameraStyles.button} onPress={saveFrame}>
+          <Text style={cameraStyles.buttonText}>Save Frame</Text>
         </TouchableOpacity>
       </View>
     </View>
