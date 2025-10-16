@@ -23,10 +23,7 @@
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false,
-      "permissions": [
-        "android.permission.CAMERA",
-        "android.permission.CAMERA"
-      ],
+      "permissions": ["android.permission.CAMERA", "android.permission.CAMERA"],
       "package": "com.woodfor.vitiligodetector"
     },
     "web": {
@@ -52,6 +49,12 @@
         {
           "cameraPermissionText": "$(PRODUCT_NAME) needs access to your Camera to detect vitiligo.",
           "enableMicrophonePermission": false
+        }
+      ],
+      [
+        "react-native-fast-tflite",
+        {
+          "enableAndroidGpuLibraries": true
         }
       ]
     ],
