@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { Text, TouchableOpacity, View, Image, Alert, ActivityIndicator } from 'react-native';
 import { Camera, useCameraDevices } from 'react-native-vision-camera';
-import { File, Paths } from 'expo-file-system';
+import { Directory, File, Paths } from 'expo-file-system/next';
+import * as ImagePicker from 'expo-image-picker';
 
 import CameraComponent from '@/components/camera';
 import ParallaxScrollView from '@/components/parallax-scroll-view';
@@ -9,6 +10,7 @@ import VitiligoDetectionOverlay from '@/components/vitiligo-detection-overlay';
 import FullscreenImageViewer from '@/components/fullscreen-image-viewer';
 import { useVitiligoDetection, VitiligoDetectionResult } from '@/services/vitiligoModel';
 import { processImageForModel } from '@/utils/imageProcessor';
+import { uploadSavedImageToCloudModel } from '@/services/cloudModel';
 import { cameraStyles, styles } from './styles';
 
 export default function Index() {
@@ -49,14 +51,10 @@ export default function Index() {
       // Create file reference using Paths API
       const permanentFile = new File(Paths.document, 'vitiligo-saved-frame.jpg');
 
-      console.log('Checking for existing saved image at:', permanentFile.uri);
-
       // Check if the permanent file exists
       if (permanentFile.exists) {
         setSavedImageUri(permanentFile.uri);
-        console.log('Found existing saved image:', permanentFile.uri);
       } else {
-        console.log('No existing saved image found');
       }
     } catch (error) {
       console.error('Error checking for existing saved image:', error);
@@ -69,7 +67,6 @@ export default function Index() {
 
       // First check current permission status
       const currentPermission = await Camera.getCameraPermissionStatus();
-      console.log('Current camera permission:', currentPermission);
 
       if (currentPermission === 'granted') {
         setHasPermission(true);
@@ -78,9 +75,7 @@ export default function Index() {
       }
 
       // If not granted, request permission
-      console.log('Requesting camera permission...');
       const permission = await Camera.requestCameraPermission();
-      console.log('Camera permission result:', permission);
       setHasPermission(permission === 'granted');
     } catch (error) {
       console.error('Error requesting camera permission:', error);
@@ -124,6 +119,57 @@ export default function Index() {
     setShowSavedImage(!showSavedImage);
   };
 
+  const handleUploadImage = async () => {
+    try {
+      // Request permissions if necessary
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert('Permission required', 'Please allow access to your photo library.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsMultipleSelection: false,
+        quality: 1,
+      });
+
+      if (result.canceled || !result.assets || result.assets.length === 0) {
+        return;
+      }
+
+      const pickedUri = result.assets[0].uri;
+
+      // Build source file from its uri using next API helpers
+      const sourceDirPath = Paths.dirname(pickedUri);
+      const sourceName = Paths.basename(pickedUri);
+      const sourceFile = new File(new Directory(sourceDirPath), sourceName);
+
+      // Destination file in app documents
+      const permanentFile = new File(Paths.document, 'vitiligo-saved-frame.jpg');
+
+      // Overwrite if it already exists
+      if (permanentFile.exists) {
+        permanentFile.delete();
+      }
+
+      // Copy the picked image to the permanent location
+      sourceFile.copy(permanentFile);
+
+      const randomId = Math.random().toString(36).substring(7);
+      const cacheBustedUri = `${permanentFile.uri}?cache=${randomId}`;
+      setSavedImageUri(cacheBustedUri);
+      setImageKey((prev) => prev + 1);
+      setShowSavedImage(true);
+      setDetectionResult(null);
+      setImageDimensions(null);
+      Alert.alert('Success', 'Image uploaded and saved.');
+    } catch (error) {
+      console.error('Error uploading image:', error);
+      Alert.alert('Upload Error', 'Failed to upload and save the image.');
+    }
+  };
+
   const detectVitiligoInSavedImage = async () => {
     if (!savedImageUri || !isModelReady) {
       Alert.alert('Error', 'No saved image or model not ready');
@@ -132,15 +178,12 @@ export default function Index() {
 
     try {
       setIsDetecting(true);
-      console.log('Starting vitiligo detection...');
 
       // Process the image for the model
       const processedImage = await processImageForModel(savedImageUri);
-      console.log('Image processed for model:', processedImage.width, 'x', processedImage.height);
 
       // Run vitiligo detection using the hook
       const result = await detectVitiligo(processedImage);
-      console.log('Detection result:', result);
 
       setDetectionResult(result);
 
@@ -167,6 +210,81 @@ export default function Index() {
     }
   };
 
+  const uploadSavedImageToCloud = async () => {
+    if (!savedImageUri) {
+      Alert.alert('Error', 'No saved image to upload');
+      return;
+    }
+
+    try {
+      setIsDetecting(true);
+      // Call cloud endpoint (Roboflow serverless)
+      const apiKey = '3NMDLmAoQagcaoJ3reEW';
+      const cloud = await uploadSavedImageToCloudModel(apiKey);
+
+      // Extract image dimensions if provided; otherwise use current measured dimensions
+      const remoteWidth = cloud.image?.width ?? imageDimensions?.width ?? 300;
+      const remoteHeight = cloud.image?.height ?? imageDimensions?.height ?? 200;
+
+      const preds = Array.isArray(cloud.predictions)
+        ? cloud.predictions.filter((p: any) => String(p.class ?? '').toLowerCase() !== 'normal_skin')
+        : [];
+
+      // Convert Roboflow center-based boxes to top-left expected by overlay
+      const boxes = preds.map((p: any) => {
+        const cx = Number(p.x);
+        const cy = Number(p.y);
+        const w = Number(p.width);
+        const h = Number(p.height);
+        const conf = Number(p.confidence ?? p.confidence_score ?? p.score ?? 0);
+        const poly = Array.isArray(p.points)
+          ? p.points
+              .map((pt: any) => ({ x: Number(pt.x), y: Number(pt.y) }))
+              .filter((pt: any) => Number.isFinite(pt.x) && Number.isFinite(pt.y))
+          : undefined;
+        return {
+          x: cx - w / 2,
+          y: cy - h / 2,
+          width: w,
+          height: h,
+          confidence: conf,
+          points: poly,
+        };
+      });
+
+      const overall = boxes.reduce((m, b) => (b.confidence > m ? b.confidence : m), 0);
+
+      const result: VitiligoDetectionResult = {
+        hasVitiligo: boxes.length > 0,
+        confidence: boxes.length > 0 ? overall : 0,
+        boundingBoxes: boxes,
+      };
+
+      // Ensure we have dimensions for overlays
+      if (!imageDimensions && remoteWidth && remoteHeight) {
+        setImageDimensions({ width: remoteWidth, height: remoteHeight });
+      }
+
+      setDetectionResult(result);
+
+      Alert.alert(
+        'Cloud Detection Complete',
+        boxes.length > 0
+          ? `Found ${boxes.length} prediction(s) (max ${Math.round((overall || 0) * 100)}% confidence)`
+          : 'No detections returned',
+        [
+          { text: 'View Results', onPress: () => setShowFullscreenViewer(true) },
+          { text: 'OK', style: 'cancel' },
+        ],
+      );
+    } catch (e) {
+      console.error('Cloud upload error:', e);
+      Alert.alert('Upload Error', 'Failed to upload image to cloud model');
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
   const PermissionAndDeviceCheckSection = () => {
     if (permissionLoading) {
       return (
@@ -188,7 +306,7 @@ export default function Index() {
     }
     return (
       <>
-        <Text style={styles.text}>Vitiligo Detector</Text>
+        <Text style={styles.text}>Start by</Text>
         <TouchableOpacity style={cameraStyles.button} onPress={toggleCamera}>
           <Text style={cameraStyles.buttonText}>Start Camera</Text>
         </TouchableOpacity>
@@ -226,9 +344,7 @@ export default function Index() {
         />
       ) : (
         <ParallaxScrollView
-          style={{ flex: 1 }}
           contentContainerStyle={{
-            justifyContent: 'center',
             alignItems: 'center',
           }}
           headerBackgroundColor={{
@@ -237,12 +353,39 @@ export default function Index() {
           }}
         >
           <PermissionAndDeviceCheckSection />
+          <TouchableOpacity style={cameraStyles.button} onPress={handleUploadImage}>
+            <Text style={cameraStyles.buttonText}>Upload Image</Text>
+          </TouchableOpacity>
+
+          <View
+            style={{
+              height: 1,
+              backgroundColor: '#333',
+              marginVertical: 20,
+              marginHorizontal: 20,
+            }}
+          />
+
           {savedImageUri && (
             <>
               <TouchableOpacity style={cameraStyles.button} onPress={toggleSavedImage}>
                 <Text style={cameraStyles.buttonText}>{showSavedImage ? 'Hide Saved Image' : 'View Saved Image'}</Text>
               </TouchableOpacity>
-              {isModelReady && (
+              <TouchableOpacity
+                style={[cameraStyles.button, { marginTop: 10, backgroundColor: '#8A2BE2' }]}
+                onPress={uploadSavedImageToCloud}
+                disabled={isDetecting}
+              >
+                {isDetecting ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <ActivityIndicator size="small" color="white" style={{ marginRight: 8 }} />
+                    <Text style={cameraStyles.buttonText}>Analyzing...</Text>
+                  </View>
+                ) : (
+                  <Text style={cameraStyles.buttonText}>Analyze Image</Text>
+                )}
+              </TouchableOpacity>
+              {/* {isModelReady && (
                 <TouchableOpacity
                   style={[cameraStyles.button, { marginTop: 10 }]}
                   onPress={detectVitiligoInSavedImage}
@@ -257,7 +400,7 @@ export default function Index() {
                     <Text style={cameraStyles.buttonText}>Detect Vitiligo</Text>
                   )}
                 </TouchableOpacity>
-              )}
+              )} */}
               {detectionResult && (
                 <TouchableOpacity
                   style={[cameraStyles.button, { marginTop: 10 }]}
@@ -289,7 +432,6 @@ export default function Index() {
                   onLoad={(event) => {
                     // Store image dimensions for overlay positioning
                     const { width, height } = event.nativeEvent.source;
-                    console.log('Image loaded with dimensions:', width, 'x', height);
                     setImageDimensions({ width, height });
                   }}
                 />

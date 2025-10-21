@@ -17,8 +17,6 @@ export async function processImageForModel(imageUri: string): Promise<ProcessedI
       imageUri,
       async (width, height) => {
         try {
-          console.log(`Processing image: ${width}x${height}`);
-
           // Create a mock image data array with realistic skin-like colors
           // This simulates what would be extracted from an actual image
           const imageData = new Uint8Array(width * height * 3); // RGB channels

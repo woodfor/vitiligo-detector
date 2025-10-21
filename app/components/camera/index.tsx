@@ -100,8 +100,6 @@ export default function CameraComponent({
       // Create permanent file in document directory
       const permanentFile = new File(Paths.document, 'vitiligo-saved-frame.jpg');
 
-      console.log('Saving to permanent storage:', permanentFile.uri);
-
       // Delete old file if it exists
       try {
         if (permanentFile.exists) {
@@ -114,8 +112,6 @@ export default function CameraComponent({
       // Read the temporary file content and write to permanent location
       // Ensure the temporary file path has proper file:// prefix
       const tempFilePath = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
-      console.log('Original photo path:', photo.path);
-      console.log('Fixed temp file path:', tempFilePath);
 
       const tempFile = new File(tempFilePath);
       const fileContent = await tempFile.bytes();
@@ -130,7 +126,6 @@ export default function CameraComponent({
 
       // Use permanent file URI
       onFrameSaved?.(permanentFile.uri);
-      console.log('Frame saved permanently:', permanentFile.uri);
     } catch (error) {
       console.error('Error saving frame:', error);
       Alert.alert('Error', 'Failed to save frame');

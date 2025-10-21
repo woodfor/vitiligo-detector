@@ -27,11 +27,9 @@ export default function FullscreenImageViewer({
   // Fallback: Get image dimensions using Image.getSize if not provided
   React.useEffect(() => {
     if (visible && imageUri && !imageDimensions && !localImageDimensions) {
-      console.log('Getting image dimensions using Image.getSize...');
       Image.getSize(
         imageUri,
         (width, height) => {
-          console.log('Image.getSize result:', width, 'x', height);
           setLocalImageDimensions({ width, height });
         },
         (error) => {
@@ -40,13 +38,6 @@ export default function FullscreenImageViewer({
       );
     }
   }, [visible, imageUri, imageDimensions, localImageDimensions]);
-
-  console.log('Fullscreen viewer props:', {
-    visible,
-    imageUri: imageUri ? 'present' : 'missing',
-    imageDimensions,
-    localImageDimensions,
-  });
 
   // Use local dimensions if available, otherwise fall back to passed dimensions
   const effectiveDimensions = localImageDimensions || imageDimensions;
@@ -136,12 +127,12 @@ export default function FullscreenImageViewer({
               resizeMode="contain"
               onLoad={(event) => {
                 const { width, height } = event.nativeEvent.source;
-                console.log('Fullscreen image loaded with dimensions:', width, 'x', height);
                 setLocalImageDimensions({ width, height });
               }}
             />
             {detectionResult && (
               <VitiligoDetectionOverlay
+                hideSummary={true}
                 detectionResult={detectionResult}
                 imageWidth={effectiveDimensions.width}
                 imageHeight={effectiveDimensions.height}

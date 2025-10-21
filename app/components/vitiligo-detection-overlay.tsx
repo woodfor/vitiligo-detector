@@ -1,5 +1,6 @@
 import React from 'react';
-import { View, Text, StyleSheet, Dimensions } from 'react-native';
+import { View, Text, StyleSheet } from 'react-native';
+import { Canvas, Path, Skia } from '@shopify/react-native-skia';
 import { VitiligoDetectionResult } from '../services/vitiligoModel';
 
 interface VitiligoDetectionOverlayProps {
@@ -8,6 +9,7 @@ interface VitiligoDetectionOverlayProps {
   imageHeight: number;
   containerWidth: number;
   containerHeight: number;
+  hideSummary?: boolean;
 }
 
 export default function VitiligoDetectionOverlay({
@@ -16,18 +18,11 @@ export default function VitiligoDetectionOverlay({
   imageHeight,
   containerWidth,
   containerHeight,
+  hideSummary = false,
 }: VitiligoDetectionOverlayProps) {
   // Calculate scaling factors to map detection coordinates to display coordinates
   const scaleX = containerWidth / imageWidth;
   const scaleY = containerHeight / imageHeight;
-
-  // Debug logging
-  console.log('Overlay Debug:', {
-    imageDimensions: { width: imageWidth, height: imageHeight },
-    containerDimensions: { width: containerWidth, height: containerHeight },
-    scaleFactors: { scaleX, scaleY },
-    detectionResult,
-  });
 
   const getConfidenceColor = (confidence: number): string => {
     if (confidence > 0.8) return '#FF4444'; // High confidence - red
@@ -43,12 +38,14 @@ export default function VitiligoDetectionOverlay({
   return (
     <View style={styles.overlay}>
       {/* Detection Status */}
-      <View style={styles.statusContainer}>
-        <Text style={[styles.statusText, { color: detectionResult.hasVitiligo ? '#FF4444' : '#00AA00' }]}>
-          {detectionResult.hasVitiligo ? 'Vitiligo Detected' : 'No Vitiligo Detected'}
-        </Text>
-        <Text style={styles.confidenceText}>Confidence: {getConfidenceText(detectionResult.confidence)}</Text>
-      </View>
+      {!hideSummary && (
+        <View style={styles.statusContainer}>
+          <Text style={[styles.statusText, { color: detectionResult.hasVitiligo ? '#FF4444' : '#00AA00' }]}>
+            {detectionResult.hasVitiligo ? 'Vitiligo Detected' : 'No Vitiligo Detected'}
+          </Text>
+          <Text style={styles.confidenceText}>Confidence: {getConfidenceText(detectionResult.confidence)}</Text>
+        </View>
+      )}
 
       {/* Bounding Boxes */}
       {detectionResult.boundingBoxes &&
@@ -64,17 +61,8 @@ export default function VitiligoDetectionOverlay({
           const scaledWidth = clampedWidth * scaleX;
           const scaledHeight = clampedHeight * scaleY;
 
-          console.log(`Bounding Box ${index}:`, {
-            original: { x: box.x, y: box.y, width: box.width, height: box.height },
-            clamped: { x: clampedX, y: clampedY, width: clampedWidth, height: clampedHeight },
-            scaled: { x: scaledX, y: scaledY, width: scaledWidth, height: scaledHeight },
-            confidence: box.confidence,
-            imageBounds: { width: imageWidth, height: imageHeight },
-          });
-
           // If the bounding box is invalid or too large, show a full-image overlay
           if (scaledWidth <= 0 || scaledHeight <= 0 || scaledWidth > containerWidth || scaledHeight > containerHeight) {
-            console.log(`Bounding box ${index} is invalid, showing full-image overlay`);
             return (
               <View
                 key={`full-overlay-${index}`}
@@ -97,23 +85,61 @@ export default function VitiligoDetectionOverlay({
             );
           }
 
+          const polygon = Array.isArray(box.points) && box.points.length >= 3 ? box.points : null;
+
           return (
-            <View
-              key={index}
-              style={[
-                styles.boundingBox,
-                {
-                  left: scaledX,
-                  top: scaledY,
-                  width: scaledWidth,
-                  height: scaledHeight,
-                  borderColor: getConfidenceColor(box.confidence),
-                },
-              ]}
-            >
-              <View style={[styles.confidenceLabel, { backgroundColor: getConfidenceColor(box.confidence) }]}>
-                <Text style={styles.confidenceLabelText}>{getConfidenceText(box.confidence)}</Text>
+            <View key={index}>
+              {/* Bounding box frame */}
+              <View
+                style={[
+                  styles.boundingBox,
+                  {
+                    left: scaledX,
+                    top: scaledY,
+                    width: scaledWidth,
+                    height: scaledHeight,
+                    borderColor: getConfidenceColor(box.confidence),
+                  },
+                ]}
+              >
+                <View style={[styles.confidenceLabel, { backgroundColor: getConfidenceColor(box.confidence) }]}>
+                  <Text style={styles.confidenceLabelText}>{getConfidenceText(box.confidence)}</Text>
+                </View>
               </View>
+
+              {/* Polygon overlay if provided */}
+              {polygon && (
+                <Canvas
+                  style={{
+                    position: 'absolute',
+                    left: 0,
+                    top: 0,
+                    width: containerWidth,
+                    height: containerHeight,
+                    zIndex: 4,
+                  }}
+                >
+                  {(() => {
+                    const p = Skia.Path.Make();
+                    polygon.forEach((pt, i) => {
+                      const px = Math.max(0, Math.min(containerWidth, pt.x * scaleX));
+                      const py = Math.max(0, Math.min(containerHeight, pt.y * scaleY));
+                      if (i === 0) {
+                        p.moveTo(px, py);
+                      } else {
+                        p.lineTo(px, py);
+                      }
+                    });
+                    p.close();
+                    return (
+                      <>
+                        <Path path={p} color={`${getConfidenceColor(box.confidence)}55`} style="fill" />
+                        <Path path={p} color={getConfidenceColor(box.confidence)} strokeWidth={2} style="stroke" />
+                      </>
+                    );
+                  })()}
+                </Canvas>
+              )}
             </View>
           );
         })}

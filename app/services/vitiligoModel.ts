@@ -1,5 +1,6 @@
 import { useTensorflowModel } from 'react-native-fast-tflite';
 import modelSource from '../../assets/models/vitiligo_detector.tflite';
+import { resizeImageData } from '@/utils/imageProcessor';
 
 export interface VitiligoDetectionResult {
   hasVitiligo: boolean;
@@ -10,6 +11,7 @@ export interface VitiligoDetectionResult {
     width: number;
     height: number;
     confidence: number;
+    points?: { x: number; y: number }[];
   }[];
 }
 
@@ -22,8 +24,6 @@ export interface ProcessedImage {
 // Custom hook for vitiligo detection
 export function useVitiligoDetection() {
   const tensorflowState = useTensorflowModel(modelSource);
-  const inputWidth = 224; // Standard input size for many vision models
-  const inputHeight = 224;
 
   const detectVitiligo = async (imageData: ProcessedImage): Promise<VitiligoDetectionResult> => {
     try {
@@ -31,16 +31,45 @@ export function useVitiligoDetection() {
         throw new Error('Model not loaded');
       }
 
-      // Prepare input tensor
-      const inputTensor = prepareInputTensor(imageData, inputWidth, inputHeight);
+      const model: any = tensorflowState.model;
+      // Attempt to read input tensor metadata from the model; fallback to 224x224x3
+      const inputInfo = Array.isArray(model.inputs) && model.inputs.length > 0 ? model.inputs[0] : undefined;
+      const outputInfo = Array.isArray(model.outputs) && model.outputs.length > 0 ? model.outputs[0] : undefined;
 
-      // Run inference - this is synchronous with the hook approach
-      // The model.run method expects an array of TypedArrays
-      const output = tensorflowState.model.runSync([inputTensor]);
+      const inputShape: number[] = inputInfo && Array.isArray(inputInfo.shape) ? inputInfo.shape : [1, 224, 224, 3];
+      const inputDtype: string = inputInfo && inputInfo.type ? String(inputInfo.type) : 'float32';
 
-      // Process output to get detection results
-      const result = processModelOutput(output, imageData.width, imageData.height);
+      // Shapes are typically [1, H, W, C]
+      const inputHeight = inputShape[1] ?? 224;
+      const inputWidth = inputShape[2] ?? 224;
+      const inputChannels = inputShape[3] ?? 3;
 
+      if (inputChannels !== 3) {
+        throw new Error(`Unsupported input channels: ${inputChannels}. Expected 3 (RGB).`);
+      }
+
+      // Resize to model's expected input size
+      const resized: ProcessedImage = resizeImageData(imageData, inputWidth, inputHeight);
+
+      // Build input tensor matching dtype; to mirror the Python example, do not normalize by default
+      // If dtype is float32, provide Float32 values in 0..255 range (no /255) unless your training required it
+      let inputTensor: Uint8Array | Float32Array;
+      if (String(inputDtype).toLowerCase() === 'float32') {
+        const floatInput = new Float32Array(inputWidth * inputHeight * 3);
+        for (let i = 0; i < floatInput.length; i++) {
+          floatInput[i] = resized.data[i];
+        }
+        inputTensor = floatInput;
+      } else {
+        // uint8 or others: pass raw bytes
+        inputTensor = new Uint8Array(resized.data);
+      }
+
+      // Run inference (synchronously)
+      const rawOutput = model.runSync([inputTensor]);
+
+      // Interpret outputs deterministically
+      const result = processModelOutput(rawOutput, outputInfo, inputWidth, inputHeight);
       return result;
     } catch (error) {
       console.error('Error during vitiligo detection:', error);
@@ -52,7 +81,7 @@ export function useVitiligoDetection() {
   };
 
   return {
-    model: tensorflowState.state === 'loaded' ? tensorflowState.model : null,
+    model: tensorflowState.state === 'loaded' ? (tensorflowState.model as any) : null,
     status: tensorflowState.state,
     detectVitiligo,
     isModelReady: tensorflowState.state === 'loaded' && tensorflowState.model !== null,
@@ -60,77 +89,61 @@ export function useVitiligoDetection() {
 }
 
 // Helper function to prepare input tensor
-function prepareInputTensor(imageData: ProcessedImage, inputWidth: number, inputHeight: number): Float32Array {
-  // Convert image data to the format expected by the model
-  // This assumes the model expects normalized RGB values (0-1 range)
-  const inputSize = inputWidth * inputHeight * 3; // RGB channels
-  const inputTensor = new Float32Array(inputSize);
-
-  // Simple resize and normalization
-  // In a production app, you'd want more sophisticated image processing
-  const scaleX = imageData.width / inputWidth;
-  const scaleY = imageData.height / inputHeight;
-
-  for (let y = 0; y < inputHeight; y++) {
-    for (let x = 0; x < inputWidth; x++) {
-      const srcX = Math.floor(x * scaleX);
-      const srcY = Math.floor(y * scaleY);
-
-      // Calculate source pixel index (assuming RGB format)
-      const srcIndex = (srcY * imageData.width + srcX) * 3;
-      const dstIndex = (y * inputWidth + x) * 3;
-
-      // Normalize pixel values to 0-1 range
-      if (srcIndex + 2 < imageData.data.length) {
-        inputTensor[dstIndex] = imageData.data[srcIndex] / 255.0; // R
-        inputTensor[dstIndex + 1] = imageData.data[srcIndex + 1] / 255.0; // G
-        inputTensor[dstIndex + 2] = imageData.data[srcIndex + 2] / 255.0; // B
-      }
-    }
-  }
-
-  return inputTensor;
-}
+// Removed: old prepareInputTensor. Resizing now uses resizeImageData and dtype handling is inline above.
 
 // Helper function to process model output
-function processModelOutput(output: any, originalWidth: number, originalHeight: number): VitiligoDetectionResult {
-  // This is a simplified output processing for demonstration
-  // The actual implementation depends on your model's output format
-
+function processModelOutput(
+  rawOutput: any,
+  outputInfo: any,
+  inputWidth: number,
+  inputHeight: number,
+): VitiligoDetectionResult {
   try {
-    // For demonstration, we'll simulate realistic detection results
-    // In production, this would process the actual model output
+    // react-native-fast-tflite typically returns an array of TypedArrays or numbers.
+    // Assume first output is logits/scores with shape [1, numClasses] or [numClasses].
+    const first = Array.isArray(rawOutput) ? rawOutput[0] : rawOutput;
 
-    // Simulate model output with some randomness for realistic testing
-    const baseConfidence = Math.random() * 0.8 + 0.1; // 0.1 to 0.9
-    const hasVitiligo = baseConfidence > 0.6; // Threshold for detection
+    let scores: number[] = [];
+    if (first instanceof Float32Array || first instanceof Uint8Array) {
+      scores = Array.from(first as any);
+    } else if (Array.isArray(first)) {
+      scores = first as number[];
+    } else if (typeof first === 'number') {
+      scores = [first];
+    }
 
-    let boundingBoxes;
-    if (hasVitiligo) {
-      // Generate 1-3 bounding boxes for detected vitiligo patches
-      const boxCount = Math.floor(Math.random() * 3) + 1;
-      boundingBoxes = [];
+    // If there is a batch dimension, strip it (common when output is [1, N])
+    // Some runtimes may already flatten; we keep it simple here.
 
-      for (let i = 0; i < boxCount; i++) {
-        const boxWidth = Math.random() * 0.3 + 0.1; // 10-40% of image width
-        const boxHeight = Math.random() * 0.3 + 0.1; // 10-40% of image height
-        const boxX = Math.random() * (1 - boxWidth);
-        const boxY = Math.random() * (1 - boxHeight);
+    if (scores.length === 0) {
+      return {
+        hasVitiligo: false,
+        confidence: 0.0,
+      };
+    }
 
-        boundingBoxes.push({
-          x: boxX * originalWidth,
-          y: boxY * originalHeight,
-          width: boxWidth * originalWidth,
-          height: boxHeight * originalHeight,
-          confidence: baseConfidence + (Math.random() - 0.5) * 0.2, // Add some variation
-        });
+    if (scores.length === 1) {
+      const prob = scores[0];
+      return {
+        hasVitiligo: prob >= 0.5,
+        confidence: Math.max(0, Math.min(1, Number(prob))),
+      };
+    }
+
+    let maxIndex = 0;
+    let maxScore = scores[0];
+    for (let i = 1; i < scores.length; i++) {
+      if (scores[i] > maxScore) {
+        maxScore = scores[i];
+        maxIndex = i;
       }
     }
 
+    // Assume class index 1 corresponds to vitiligo (adjust if your model differs)
+    const hasVitiligo = maxIndex === 1;
     return {
       hasVitiligo,
-      confidence: Math.max(0, Math.min(1, baseConfidence)),
-      boundingBoxes,
+      confidence: Number(maxScore),
     };
   } catch (error) {
     console.error('Error processing model output:', error);
