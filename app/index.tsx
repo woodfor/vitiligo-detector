@@ -219,7 +219,7 @@ export default function Index() {
     try {
       setIsDetecting(true);
       // Call cloud endpoint (Roboflow serverless)
-      const apiKey = '3NMDLmAoQagcaoJ3reEW';
+      const apiKey = process.env.ROBO_FLOW_API_KEY ?? '3NMDLmAoQagcaoJ3reEW';
       const cloud = await uploadSavedImageToCloudModel(apiKey);
 
       // Extract image dimensions if provided; otherwise use current measured dimensions

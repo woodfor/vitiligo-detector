@@ -28,7 +28,9 @@ export async function uploadSavedImageToCloudModel(apiKey: string): Promise<Clou
     encoding: FileSystem.EncodingType.Base64,
   });
 
-  const url = 'https://serverless.roboflow.com/vit-tracker-xcsg7/3?api_key=' + encodeURIComponent(apiKey);
+  const modelName = process.env.ROBO_FLOW_VITILIGO_DETECTION_MODEL_NAME ?? 'vit-tracker-xcsg7/3';
+
+  const url = `https://serverless.roboflow.com/${modelName}?api_key=${encodeURIComponent(apiKey)}`;
 
   const response = await fetch(url, {
     method: 'POST',
